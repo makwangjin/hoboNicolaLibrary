@@ -1,68 +1,52 @@
-
-name: Compile Translator Firmware
+name: Forced Arduino Build (CH9329 Translator)
 
 on:
   push:
     branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
+  workflow_dispatch:
 
 env:
-  PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+  PICO_BOARD: rpipico
+  SKETCH_PATH: examples/rp_hobo_nicola/rp_hobo_nicola.ino
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout Code and Submodules
-      uses: actions/checkout@v4
-      with:
-        submodules: true
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-    - name: Get Pico SDK
-      uses: actions/checkout@v4
-      with:
-        repository: raspberrypi/pico-sdk
-        ref: master
-        path: pico-sdk
+      - name: Install Arduino CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
 
-    - name: Install ARM GCC
-      uses: carlosperate/arm-none-eabi-gcc-action@v1
+      - name: Configure Arduino Core (Pico)
+        run: |
+          arduino-cli core update-index --additional-urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+          arduino-cli core install rp2040:rp2040 --additional-urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+          arduino-cli lib install "Adafruit TinyUSB Library"
 
-    - name: Setup Environment Variables
-      run: |
-        echo "ARDUINO_CORE_TOOLS_PATH=$HOME/.arduino15/packages/rp2040/tools" >> $GITHUB_ENV
-        echo "ARDUINO_CORE_ROOT=$HOME/.arduino15/packages/rp2040/hardware/rp2040" >> $GITHUB_ENV
+      - name: Build and Compile INO file
+        run: |
+          # 라이브러리 심볼릭 링크 설정 (중요)
+          mkdir -p $HOME/Arduino/libraries
+          ln -s $GITHUB_WORKSPACE $HOME/Arduino/libraries/hoboNicolaLibrary
+          
+          # 컴파일 실행
+          arduino-cli compile --fqbn rp2040:rp2040:${{ env.PICO_BOARD }}:usbstack=tinyusb ${{ env.SKETCH_PATH }}
+          
+          # 빌드된 .uf2 파일 위치를 찾습니다.
+          BUILD_DIR=$(find $HOME/.arduino15 -name "${{ env.PICO_BOARD }}" -type d | grep build)
+          
+          # [수정] 이 경로는 Arduino CLI 버전에 따라 다르므로, /tmp 폴더에서 찾습니다.
+          cp -f $BUILD_DIR/${{ env.SKETCH_PATH }}.bin.uf2 ./rp_hobo_nicola_translator.uf2 || true
 
-    - name: Build and Compile INO file
-      run: |
-        # Arduino-CLI를 사용하여 INO 파일을 컴파일하고 빌드
-        # NOTE: 이 단계는 Arduino IDE의 복잡한 환경 설정 때문에 직접 컴파일이 어려울 수 있습니다.
-        # 가장 확실한 방법은 CMake를 사용하는 것입니다.
-
-        # 임시 CMakeLists.txt 생성 (Arduino IDE 대신 CMake로 빌드)
-        mkdir build
-        cd build
-        echo "
-        cmake_minimum_required(VERSION 3.13)
-        include(\$ENV{PICO_SDK_PATH}/pico_sdk_init.cmake)
-        project(rp_hobo_nicola_translator)
-        add_executable(\${PROJECT_NAME} ../examples/rp_hobo_nicola/rp_hobo_nicola.ino)
-        target_link_libraries(\${PROJECT_NAME} pico_stdlib) # 최소한의 라이브러리 링크
-
-        # TODO: 여기에 hoboNicolaLibrary와 Pico-PIO-USB 라이브러리 경로 및 링크 추가 필수!
-        
-        target_include_directories(\${PROJECT_NAME} PUBLIC \${CMAKE_CURRENT_SOURCE_DIR})
-        pico_add_extra_outputs(\${PROJECT_NAME})
-        " > CMakeLists.txt
-        
-        # [이 방법은 너무 복잡합니다. Skip]
-        echo "Skipping complex Arduino CLI/CMake build setup. Manual local build is recommended for this project."
-        exit 1 # 빌드 실패로 표시 (로컬 빌드 권장)
-        
-
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: translator-firmware
-        path: build/rp_hobo_nicola_translator.uf2
+      - name: Find and Upload UF2 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ch9329-translator-firmware
+          path: $HOME/.arduino15/build/*/build.build/rp_hobo_nicola.ino.uf2
+          # path: ./rp_hobo_nicola_translator.uf2 # (fallback)
